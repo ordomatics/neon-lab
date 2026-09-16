@@ -1,0 +1,7 @@
+# Local state holds resource IDs and provider metadata; the lab is throwaway.
+.terraform/
+.terraform.lock.hcl
+*.tfstate
+*.tfstate.*
+*.tfvars
+crash.log

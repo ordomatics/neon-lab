@@ -1,0 +1,8 @@
+# Belt-and-suspenders on top of terraform/.gitignore: this repo is public,
+# and Terraform state/provider binaries have no business in it either way.
+terraform/.terraform/
+terraform/.terraform.lock.hcl
+terraform/*.tfstate
+terraform/*.tfstate.*
+terraform/*.tfvars
+terraform/crash.log

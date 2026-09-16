@@ -1,0 +1,71 @@
+# The Neon storage layer. Apply after the operator, MinIO and the CNPG cluster.
+#
+# numSafekeepers is required by the CRD but read by nothing outside test/fixtures:
+# the Cluster controller only reconciles the storage controller and storage broker.
+# The safekeepers and pageserver below are ours to create, one CR each.
+apiVersion: neon.oltp.molnett.org/v1alpha1
+kind: Cluster
+metadata:
+  name: neon-lab
+  namespace: neon
+spec:
+  defaultPGVersion: 17
+  numSafekeepers: 3
+  neonImage: neondatabase/neon:8463
+  bucketCredentialsSecret:
+    name: bucket-credentials
+    namespace: neon
+  # CNPG writes a libpq URI into this key; the storage controller takes it as DATABASE_URL.
+  storageControllerDatabaseSecret:
+    name: storage-controller-pg-app
+    key: uri
+---
+# storageConfig.size has no default — the marker in safekeeper_types.go is missing its
+# leading '+', so it is a plain comment and the API server rejects the CR without a size.
+apiVersion: neon.oltp.molnett.org/v1alpha1
+kind: Pageserver
+metadata:
+  name: pageserver-0
+  namespace: neon
+spec:
+  cluster: neon-lab
+  id: 0
+  bucketCredentialsSecret:
+    name: bucket-credentials
+    namespace: neon
+  storageConfig:
+    size: 20Gi
+---
+# Three safekeepers because writes commit by Paxos majority; two would make the quorum a fiction.
+apiVersion: neon.oltp.molnett.org/v1alpha1
+kind: Safekeeper
+metadata:
+  name: safekeeper-0
+  namespace: neon
+spec:
+  cluster: neon-lab
+  id: 0
+  storageConfig:
+    size: 10Gi
+---
+apiVersion: neon.oltp.molnett.org/v1alpha1
+kind: Safekeeper
+metadata:
+  name: safekeeper-1
+  namespace: neon
+spec:
+  cluster: neon-lab
+  id: 1
+  storageConfig:
+    size: 10Gi
+---
+apiVersion: neon.oltp.molnett.org/v1alpha1
+kind: Safekeeper
+metadata:
+  name: safekeeper-2
+  namespace: neon
+spec:
+  cluster: neon-lab
+  id: 2
+  storageConfig:
+    size: 10Gi

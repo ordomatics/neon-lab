@@ -1,0 +1,178 @@
+# The acceptance test: a real Odoo deployment (our own platform image) against the
+# self-hosted Neon compute, instead of the hosted Neon endpoint it normally uses.
+#
+# Two differences from a production deployment, both forced by the lab:
+#   DB_PORT 55433   the Neon compute's port, not Postgres' 5432
+#   DB_SSLMODE      hosted Neon requires TLS; this compute serves plain TCP
+#
+# The pull secret is gitlab-registry-local, not the gitlab-registry the clusters use:
+# every cluster secret is a deploy token scoped to one client project, and no project
+# grants access to ordomatics/helm/odoo. Destroy this lab (or rotate) when finished.
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  namespace: odoo-lab
+spec:
+  selector:
+    app: redis
+  ports:
+    - port: 6379
+      targetPort: 6379
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  namespace: odoo-lab
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis
+  template:
+    metadata:
+      labels:
+        app: redis
+    spec:
+      containers:
+        - name: redis
+          image: redis:7-alpine
+          ports:
+            - containerPort: 6379
+          resources:
+            requests: { cpu: 50m, memory: 64Mi }
+---
+# odoo.conf lists session_redis and queue_job in server_wide_modules, so these are
+# not optional extras — Odoo loads them at startup whether or not we use sessions.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: odoo-env
+  namespace: odoo-lab
+data:
+  DB_HOST: "odoo-main-postgres.neon.svc.cluster.local"
+  DB_PORT: "55433"
+  DB_USER: "odoo"
+  DB_NAME: "odoo"
+  ODOO_DB_NAME: "odoo"
+  DB_SSLMODE: "disable"
+  ODOO_DB_FILTER: "^odoo$"
+  ODOO_DB_MAXCONN: "16"
+  ODOO_WORKERS: "2"
+  ODOO_CRON_THREADS: "1"
+  ODOO_LOG_LEVEL: "info"
+  ODOO_LIST_DB: "false"
+  ODOO_PROXY_MODE: "false"
+  ODOO_QUEUE_JOB_CHANNELS: "root:2"
+  SESSION_REDIS_HOST: "redis.odoo-lab.svc.cluster.local"
+  SESSION_REDIS_PORT: "6379"
+  REDIS_HOST: "redis.odoo-lab.svc.cluster.local"
+  REDIS_PORT: "6379"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: odoo-secrets
+  namespace: odoo-lab
+type: Opaque
+stringData:
+  # Redacted before publishing: these are real, WORKING credentials against a
+  # database now reachable from the internet over TLS (see the pgbouncer
+  # section of FINDINGS.md) — not safe to commit verbatim. Set your own; the
+  # compute's own pg_hba trusts loopback and requires md5 for everything else,
+  # so DB_PASSWORD must match whatever you actually set on the `odoo` role.
+  DB_PASSWORD: "<set your own>"
+  ADMIN_PASSWD: "<set your own>"
+---
+# One-shot schema build. setup-odoo-modules.sh is idempotent (it checks
+# ir_module_module), so a re-run after a failure resumes instead of starting over.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: odoo-init
+  namespace: odoo-lab
+spec:
+  backoffLimit: 2
+  template:
+    spec:
+      restartPolicy: Never
+      imagePullSecrets:
+        - name: gitlab-registry-local
+      containers:
+        - name: odoo-init
+          image: registry.gitlab.com/ordomatics/helm/odoo:latest
+          args: ["setup-modules-only"]
+          envFrom:
+            - configMapRef: { name: odoo-env }
+            - secretRef: { name: odoo-secrets }
+          env:
+            # ODOO_SETUP_TIMEOUT, not SETUP_TIMEOUT: the script reads
+            # SETUP_TIMEOUT="${ODOO_SETUP_TIMEOUT:-900}", and the full module init
+            # exceeds 900s on this hardware — timeout(1) kills odoo with exit 124.
+            - name: ODOO_SETUP_TIMEOUT
+              value: "3600"
+          resources:
+            requests: { cpu: 500m, memory: 1Gi }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: odoo
+  namespace: odoo-lab
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: odoo
+  template:
+    metadata:
+      labels:
+        app: odoo
+    spec:
+      imagePullSecrets:
+        - name: gitlab-registry-local
+      containers:
+        - name: odoo
+          image: registry.gitlab.com/ordomatics/helm/odoo:latest
+          # Same command as production, including the explicit --load.
+          command: ["/entrypoint.sh", "odoo", "--load=web,session_redis"]
+          # The Job above builds the schema; the serving pod must not re-run setup
+          # on every restart, matching how production deploys behave.
+          env:
+            - name: SKIP_MODULE_SETUP
+              value: "true"
+          envFrom:
+            - configMapRef: { name: odoo-env }
+            - secretRef: { name: odoo-secrets }
+          ports:
+            - containerPort: 8069
+              name: http
+          # Probe shape copied from the live production deployment: the startupProbe's
+          # generous failureThreshold is what absorbs a slow first boot.
+          startupProbe:
+            httpGet: { path: /web/health, port: http }
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            failureThreshold: 60
+            timeoutSeconds: 10
+          readinessProbe:
+            httpGet: { path: /web/health, port: http }
+            initialDelaySeconds: 10
+            periodSeconds: 15
+            failureThreshold: 3
+            timeoutSeconds: 10
+          resources:
+            requests: { cpu: 500m, memory: 1Gi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: odoo
+  namespace: odoo-lab
+spec:
+  selector:
+    app: odoo
+  ports:
+    - port: 8069
+      targetPort: 8069

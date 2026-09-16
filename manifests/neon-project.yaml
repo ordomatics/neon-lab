@@ -1,0 +1,26 @@
+# A Neon project and its main branch — the tenant/timeline an Odoo database will live on.
+# Apply only once the Cluster is Available: the Project controller talks to the storage
+# controller over HTTP to create the tenant, and the Branch controller to create the timeline.
+#
+# tenantId and timelineID are deliberately omitted: the operator generates them
+# (utils/ids.go) and writes them back into the spec.
+apiVersion: neon.oltp.molnett.org/v1alpha1
+kind: Project
+metadata:
+  name: odoo
+  namespace: neon
+spec:
+  cluster: neon-lab
+  pgVersion: 17
+---
+# pgVersion is required here even though branch_types.go looks like it defaults to 17 —
+# that marker is missing its leading '+', so it never reached the CRD.
+# projectID matches the Project's resource name, not a separate id field.
+apiVersion: neon.oltp.molnett.org/v1alpha1
+kind: Branch
+metadata:
+  name: odoo-main
+  namespace: neon
+spec:
+  projectID: odoo
+  pgVersion: 17
